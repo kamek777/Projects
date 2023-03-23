@@ -1,0 +1,431 @@
+---
+title: "Regresja projekt 1"
+author:
+  name: Kwiek Kamil
+  affiliation: 
+subtitle: Regresja liniowa i wieloraka
+output:
+  html_document:
+    theme: darkly
+    df_print: paged
+    toc: true
+    toc_float: true
+
+---
+
+
+
+
+
+
+Zaimportujemy zbiór danych `Carseats` z biblioteki `ISLR` i dopasujemy model (lub modele) regresji liniowej prostej przewidujący wartość zmiennej *Sales*. Zmienną objaśniającą dobierzemy według znanych metod (współczynnik korelacji, wykresy). Ocenimy jakość modelu ($R^2$, błąd standardowy) i zweryfikujemy założenia (analiza reszt).
+
+```{r, warning=FALSE,message=FALSE,echo=FALSE}
+library(tidyverse)
+library(ISLR)
+library(kableExtra)
+library(GGally)
+library(knitr)
+library(lmtest)
+library(corrplot)
+library(olsrr)
+```
+
+# Regresja liniowa
+
+### Przedstawienie oraz opis danych
+
+```{r, warning=FALSE}
+carseats <- tibble::as.tibble(ISLR::Carseats)
+head(carseats)
+```
+
+Zbiór `Carseats` przedstawia sprzedaż fotelików samochodowych dla dzieci w 400 różnych sklepach.
+Zawiera 11 zmiennych:
+
+- `Sales` -- sprzedaż jednostkowa (w tysiącach) w każdej lokalizacji,
+- `CompPrice` -- cena pobierana przez konkurenta w każdej lokalizacji,
+- `Income` -- poziom dochodów społeczności (w tysiącach dolarów),
+- `Advertising` -- budżet na reklamę lokalną dla firmy w każdej lokalizacji (w tys. dolarów),
+- `Population` -- wielkość populacji w regionie (w tysiącach),
+- `Price` -- cena jaką firma pobiera za foteliki samochodowe w każdym miejscu,
+- `ShelveLoc` -- czynnik o poziomach *Bad*, *Good* i *Medium* wskazujący na jakość lokalizacji półek na foteliki samochodowe w każdej placówce,
+- `Age` -- średni wiek lokalnej populacji,
+- `Education` -- poziom wykształcenia w każdej lokalizacji,
+- `Urban` -- czynnik o poziomach *No* i *Yes* wskazujący, czy sklep znajduje się w lokalizacji miejskiej
+(dla *No* miejscem zamieszkania jest wieś),
+- `US` -- czynnik o poziomach *No* i *Yes* wskazujący, czy sklep znajduje się w USA czy nie.
+
+
+```{r}
+kable(summary(carseats), escape = F) %>%
+  kable_styling(latex_options = "hold_position")
+```
+
+
+
+
+### Założenie 1: Zależność liniowa
+
+Przekształcamy *"tibbl'a"* ze wszystkimi zmiennymi na mniejszą wersję, zawierającą wyłącznie zmienne ciągłe.
+
+```{r}
+subcarseats <- subset(carseats, select=-ShelveLoc)
+ggpairs(subcarseats[1:8])
+
+
+```
+
+Powyższy wykres przedstawia zależności pomiędzy wszystkimi ciągłymi zmiennymi. (kopia w większej rozdzielczości została zamieszczona na platformie delta w formacie pdf pod nazwą: *"Pairplot of all continuous varaibles"*) Można zauważyć, że istnieją dwie korelacje warte naszej uwagi. Pierwsza, pomiędzy zmiennymi 
+*CompPrice* i *Price* z wartością współczynnika  korelacji Pearsona równym $0,585$ oraz druga pomiędzy *Sales* i *Price* dla których ten współczynnik wynosi $-0,445$. Korelacje te są dość istotne, ponieważ wartość współczynnika jest bliska $1$ dla współczynnika dodatniego i $-1$ dla ujemnego. Założenie o zależności liniowej jest spełnione. Zatem wartość zmiennej *Sales* będziemy przewidywać na podstawie zmiennej *Price*. Innymi słowy zmienna *Sales* to zmienna objaśniana, a *Price* objaśniającą.
+
+
+Sprawdzimy teraz rozkład tych dwóch zmiennych za pomocą histogramów.
+
+```{r}
+ggplot(carseats, aes(x=Sales))+
+  labs(title = 'Histogram sprzedaży fotelików samochodowych',
+       x = 'Sprzedaż',
+       y = 'Częstotliwość') + 
+  geom_histogram(aes(y=..density..),
+                 color="darkblue", 
+                 fill="lightblue", 
+                 binwidth = 0.5) +
+  geom_density(alpha=.3, fill="#FF6666") +
+  theme_classic()
+```
+
+
+```{r, message = FALSE}
+ggplot(carseats, aes(x=Price))+
+  labs(title = 'Histogram ceny fotelików samochodowych',
+       x = 'Cena',
+       y = 'Częstotliwość') + 
+  geom_histogram(aes(y=..density..),
+                 color="darkblue", 
+                 fill="lightblue", 
+                 binwidth = 5) +
+  geom_density(alpha=.3, fill="#FF6666") +
+  theme_classic()
+```
+
+
+Wizualizując rozkłady tych dwóch zmiennych możemy domyśleć się, że posiadają rozkład normalny. Dla potwierdzenia naszej hipotezy użyjemy testu Shapiro-Wilka, który zakłada, że 
+zmienna posiada rozkład normalny.
+
+```{r}
+shapiro.test(carseats$Sales)
+shapiro.test(carseats$Price)
+```
+
+Wnioskując, w obu przypadkach otrzymaliśmy $p$-value $> 0,05$, zatem nie mamy podstaw do odrzucenia $H_0$.
+
+
+```{r}
+carseats %>%
+  ggplot(aes(x = Price,y = Sales)) +
+  geom_point() +
+  labs(title = 'Wykres punktowy zależności sprzedaży od ceny',
+       subtitle = 'Jak cena fotelika wpływa na jego sprzedaż?',
+       x = 'Price',
+       y = 'Sales') + 
+  geom_smooth(method='lm' ,formula=y~x, se=F, color = 'red')
+
+```
+
+Wykres nie wyklucza zależności liniowej pomiędzy zmiennymi `Sales` i `Price`, więc przejdziemy do stworzenia modelu regresji liniowej tych zmiennych.
+
+
+### Założenie 2: Rozkład reszt
+
+```{r}
+lmfit1 <- lm(Sales~Price, data = carseats)
+summary(lmfit1)
+```
+
+Z naszego modelu, możemy wywnioskować: 
+
+- współczynnik kierunkowy $\beta_1$ w naszym modelu regresji wynosi $-0,053073$, natomiast $\beta_0$ czyli wyraz wolny $13,641915$, czyli im mniejsza cena fotelika tym sprzedaż produktu rośnie,
+-  $[***]$ przy współczynniku $\beta_1$ oznacza, że cena ma istotny wpływ na sprzedaż fotelików,
+-  błąd resztowy (odchylenie standardowe składnika resztowego) wynosi $2,532 \; tys \; \$$ co oznacza, że wartości obliczone na podstawie modelu różnią się od rzeczywistości średnio 
+$\pm\; 2,532 \; tys \; \$$,
+- współczynnik determinacji $(R^2)$ informuje nas o tym, jaki procent wariancji zmiennej objaśnianej został wyjaśniony przez funkcję regresji, Współczynnik  $R^2$ (multiple R-squared) wynosi $0,196$ czyli cena wyjaśnia $19,6\%$  zmienności sprzedaży.
+
+
+```{r}
+ggplot(lmfit1, aes(x=resid(lmfit1)))+
+  labs(title = 'Histogram reszt modelu',
+       x = 'Reszty',
+       y = 'Częstotliwość') + 
+  geom_histogram(aes(y=..density..),
+                 color="darkblue", 
+                 fill="lightblue", 
+                 binwidth = 0.4) +
+  geom_density(alpha=.3, fill="#FF6666") +
+  theme_classic()
+```
+
+
+```{r}
+ggplot(lmfit1, aes(sample=lmfit1$residuals)) + 
+  geom_qq() + 
+  geom_qq_line(color = 'red') + 
+  labs(title='Wykres kwartyl-kwartyl reszt', x='Kwartyle teoretyczne', y='Kwartyle próbkowe')
+```
+
+
+```{r}
+shapiro.test(lmfit1$residuals)
+```
+
+Wszystkie metody użyte przez nas świadczą o tym, że reszty naszego modelu mają rozkład normaly. 
+
+
+
+### Założenie 3: Zerowa średnia reszt
+
+Do sprawdzenia zerowej średniej reszt użyjemy testu t-studenta.
+
+```{r}
+t.test(lmfit1$residuals)
+```
+
+W tym wypadku test t-student wykazał, że średnia jest równa zero. 
+
+```{r}
+ggplot(lmfit1, aes(.fitted, .resid)) + 
+  geom_point() + 
+  stat_smooth(method='loess', formula=y~x, se=F) +
+  geom_hline(yintercept=0, linetype='dashed', color='red') +
+  labs(title='Wykres zależności reszt od dopasowanych wartości', 
+       x='Dopasowane wartości',
+       y='Reszty')
+```
+
+
+Patrząc na wykres zależności reszt od dopasowanych wartości możemy zauważyć większe odchylenia dla małych jak i dużych wartości zmiennej objaśnianej (`Price`).
+
+### Założenie 4: Niezależność reszt
+
+```{r}
+lmtest::dwtest(lmfit1)
+```
+
+W naszym przypadku $p$-value $> 0,05$, więc nie mamy podstaw, aby odrzucić hipotezę o niezależności w resztach. 
+
+
+### Założenie 5: Homoskedastyczność
+
+Do sprawdzenia homoskedastyczności posłuży nam wykres zależności pierwiastka standaryzowanych reszt od dopasowanych wartości.
+
+```{r}
+lmfit1 %>%
+ggplot(aes(.fitted, sqrt(abs(.stdresid)))) + 
+  geom_point() + stat_smooth(method='loess', formula=y~x, se=F) +
+  labs(title='Zależność pierwiastka standaryzowanych reszt od dopasowanych wartości', x='Dopasowane wartości', y='Pierwiastek standaryzowanych reszt')
+```
+
+Rozrzut reszt na wykresie jest mniej więcej równy dla wszystkich dopasowanych wartości. Innymi słowy, reszty są równomiernie rozrzucone wokół niebieskiej linii. Dla pewności przeprowadzimy test Breusch-Pagan, który za hipotezę zerową zakłada homoskedastyczność reszt. 
+
+```{r}
+lmtest::bptest(lmfit1)
+```
+
+$P$-value $> 0,05$, więc zakładamy homoskedastyczność reszt. 
+
+### Podsumowanie
+Reasujmując wszystkie aspekty kwintesencji tematu oraz dochodząc do fundamentalnej konkluzji możemy stwierdzić, iż powyższy model regresji liniowej jest zgodny z naszymi założeniami. Korzystająć ze współczynnika korelacji Pearsona dopasowaliśmy zmienną objaśniającą (`Price`).
+Przewidywana zmienna `Sales` jest najbardziej zależna od zmiennej `Price`. Analiza reszt wykazała, że model jest zgodny założeniami i ma postać:
+
+$Sales = 13,64 - 0,05 \cdot Price$
+
+# Regresja wieloraka
+
+Dopasujemy model (lub modele) regresji liniowej wielorakiej przewidujący wartość zmiennej Sales. Model zbudujemy w wybrany przez nas sposób.
+Ocenimy jakość modelu i spełnienie założeń. Porównamy otrzymane modele z modelem regresji liniowej prostej. 
+
+
+Spójrzmy raz jeszcze na nasz zbiór danych.
+
+```{r}
+head(carseats)
+```
+
+### Dopasowanie modelu
+
+Zastosujemy w tym przypadku metodę krokową wstecz, zatem stworzymy model ze wszystkimi istniejącymi zmiennymi, a następnie krok po kroku będziemy usuwać zmienne objaśniające aż do momentu, gdy uzyskamy najlepszy możliwy model. W naszym modelu zmienną zależną będzie oczywiście sprzedaż (`Sales`).
+W funkcji `lm()` możemy zamiast dodawać wszystkie zmienne napisać tylko kropkę - uzyskamy ten sam model.
+
+```{r}
+lmfit2 <- lm(Sales~., data = carseats)
+summary(lmfit2)
+```
+
+
+Dzięki funkcji `summary()` odczytujemy, że $R^2$ naszego modelu wynosi $0,8698$. 
+Tak zbudowany model wyjaśnia $86,98\%$ zmienności bieżącą sprzedaż, ale nie wszystkie zmienne są w tym modelu istotne.
+
+### Interpretacja wyników
+
+Zinterprtujmy nasze poszczególne wyniki:
+
+- cena naliczana przez konkurenta w każdej lokalizacji  zwiększa sprzedaż średnio o $0,0939149\; tys\; \$$,
+- Poziom dochodów wspólnoty zwiększa sprzedaż średnio o $0,0128717 \;tys \;\$$,
+- lokalny budżet przeznaczany na reklamę produktu powoduje średni wzrost sprzedaży o $0,1308637 \;tys \;\$$,
+- rozmiar populacji w danym regionie powoduje średni spadek sprzedaży o $0,0001239\; tys\; \$$,
+- cena opłaty firmowejza foteliki samochodowe w dowolnej lokalizacji powoduje średni spadek sprzedaży o $0,0925226 \;tys \;\$$,
+- wzrost wieku wpływa na coraz to mniejszą sprzedaż fotelików o średnio $0,0449743 \;tys \;\$$,
+- wzrost edukacji klienta w danej lokalizacji zmniejsza sprzedaż fotelików o średnio $0,0399844 \;tys\;\$$.
+
+
+Korzystając ze współczynnika informacyjnego `Akaike` `(AIC)` uzyskamy najlepszą możliwą dla nas jakość modelu poprzez eliminację następnych zmiennych, skorzystamy z powyższego algorytmy przy pomocy funkcji `step()`.
+
+```{r}
+ step(lmfit2, direction = "backward")
+```
+
+
+
+
+Jak widzimy kolejno usuwamy zmienne, które w naszym modelu mają najmniejszą wartość `AIC`, najpierw był to *Population*, następnie był to *Urban*, kolejno *Education* oraz *US*. Dochodzimy do momentu w algorytmie gdzie najniższą wartość
+`AIC` ma `<none>` zatem poniższe zmienne zostają w naszym modelu regresji wielorakiej. Widzimy, że dla wszystkich zmiennych $R^2$ wynosi $0,8698$. Sprawdźmy teraz ile wynosi nasz $R^2$ dla naszego gotowego modelu, po redukcji tych 3 zmiennych:
+
+
+```{r}
+new_lmfit2 <- lm(Sales~ CompPrice + Income + Advertising + Price + ShelveLoc + Age, data= carseats)
+summary(new_lmfit2)
+```
+
+
+Dla naszego nowego modelu $R^2$ wynosi aż $0,8697$ mimo, że usunęliśmy z modelu 3 zmienne. Spowodowane jest to tym, że te odrzucone zmienne nie wpływały istotnie na zmienną `Sales`. Dla przykładu usuńmy z naszego ostatecznego modelu zmienną `Advertising` i zobaczymy, że nasz $R^2$ znacznie zmaleje.
+
+### Przykład z usunięciem prawidłowej zmiennej objaśniającej
+
+```{r}
+new_lmfit2_no_ad <- lm(Sales~ CompPrice + Income  + Price + ShelveLoc + Age, data= carseats)
+summary(new_lmfit2_no_ad)
+```
+
+$R^2$ wynosi już $0,7954$. Podsumowując, nasz ostateczny model ma wszystkie zmienne istotne. Usunęliśmy 3, które były nieistotne, zatem tak skonstruowany przez nas model wyjaśnia $86,97\%$  zmienności bieżacej sprzedaży.
+
+### Badanie współliniowości
+
+Omówmy temat współliniowości zmiennych objaśniających:
+
+
+```{r}
+ols_vif_tol(new_lmfit2)
+```
+
+Kolumna `Tolerance` wskazuje wartość procentową niewyjaśnionej zmienności danej zmiennej przez pozostałe zmienne objaśniające. Dla przykładu: współczynnik tolerancji dla `Advertising` wynosi $0,9872299$  co oznacza, że $98,7\%$ zmienności `Advertising` nie jest wyjaśnione przez pozostałe zmienne w modelu.
+Kolumna `VIF` jest obliczana na podstawie wartości współczynnika tolerancji i ukazuje nam o ile wariancja
+szacowanego współczynnika regresji jest podwyższona z powodu współliniowości danej zmiennej objaśniającej z pozostałymi zmiennymi objaśniającymi
+Wszystkie zmienne mają `VIF` na podobnym poziomie w granicach $1.0$ a $1.5$ (około) zatem nie wskazują współliniowości. 
+ `VIF` $> 4$ wskazuje na współliniowość zmienncyh, także u nas takie zmienne nie występują.
+
+### Normalność reszt
+
+Sprawdźmy normalność naszych reszt:
+
+```{r}
+ggplot(new_lmfit2, aes(x=resid(new_lmfit2)))+
+  labs(title = 'Histogram reszt modelu',
+       x = 'Reszty',
+       y = 'Częstotliwość') + 
+  geom_histogram(aes(y=..density..),
+                 color="darkblue", 
+                 fill="lightblue", 
+                 binwidth = 0.5) +
+  geom_density(alpha=.3, fill="#FF6666") +
+  theme_classic()
+```
+
+
+Reszty w naszym modelu wydają się być zbliżone do rozkładu normalnego, natomiast nie możemy tego stwierdzić w 100%.
+Sprawdźmy wykres `QQ-plot` do zbadania rozkładu normalnego naszych zmiennych.
+
+
+```{r}
+ggplot(new_lmfit2, aes(sample=new_lmfit2$residuals)) + 
+  geom_qq() + 
+  geom_qq_line(color = 'red') + 
+  labs(title='Wykres kwartyl-kwartyl reszt', x='Kwartyle teoretyczne', y='Kwartyle próbkowe')
+```
+
+Widzimy, że prawie wszystkie punkty leżą na czerwonej lini, jedynie problem jest na początku oraz na końcu.
+
+
+```{r}
+new_lmfit2 %>%
+ggplot(aes(.fitted, .resid)) + 
+  geom_point() + 
+  stat_smooth(method='loess', formula=y~x, se=F) +
+  geom_hline(yintercept=0, linetype='dashed', color='red') +
+  labs(title='Wykres zależności reszt od dopasowanych wartości', 
+       x='Dopasowane wartości',
+       y='Reszty')
+```
+
+Na wykresie zależności reszt od dopasowanych wartości możemy zauważyć delikatne odchylenie w końcowej jego fazie. Innymi słowy, współczynniki modelu regresji powinny być godne zaufania i nie musimy wykonywać transformacji na danych.
+
+
+### Identyfikacja negatywnych punktów
+
+```{r}
+ols_plot_cooksd_bar(new_lmfit2)
+```
+
+
+```{r}
+ols_plot_resid_stud_fit(new_lmfit2)
+```
+
+
+Przypisanie tej funkcji do obiektu zwraca nam tabelę z numerami zidentyfikowanych obserwacji wpływowych. W przypadku odległości Cooka jest to ich 14 obserwacji. Sposób ten pozwala nam na identyfikację punktów, które negatywnie wpływają na model regresji. Miara jest kombinacją wartości dźwigni i reszt każdej obserwacji; im wyższa dźwignia i reszty, tym wyższa odległość Cooka.
+
+### Homoskedastyczność
+
+```{r}
+new_lmfit2 %>%
+ggplot(aes(.fitted, sqrt(abs(.stdresid)))) + 
+  geom_point() + stat_smooth(method='loess', formula=y~x, se=F) +
+  labs(title='Zależność pierwiastka standaryzowanych reszt od dopasowanych wartości', x='Dopasowane wartości', y='Pierwiastek standaryzowanych reszt')
+```
+```{r}
+lmtest::bptest(new_lmfit2)
+```
+
+
+Nie mamy wystarczających dowodów, aby stwierdzić, że heteroskedastyczność występuje w naszym modelu regresji.
+
+### Podsumowanie
+Korzystając z algorytmu `AIC` dobraliśmy najlepszy możliwy model regresji wielorakiej, który dany jest wzorem:
+
+$Sales = 5,48 + 0,093 \cdot CompPrice + 0,16 \cdot Income + 0,12 \cdot Advertising + \\-0,01 \cdot Price + 4,84 \cdot ShelveLocMedium - 0,05 \cdot Age$
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
